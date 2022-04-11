@@ -1,14 +1,41 @@
 #include <mictcp.h>
-#include <api/mictcp_core.h> 
-#define MAX_TRANS 20 
-int PE=0; 
-int PA=0;  
+#include <api/mictcp_core.h>  
 
- 
- unsigned long timeout=50; //en ms 
+#define MAX_TRANS 20 
+#define TAILLE_Fen 5 
+#define TAUX 0.2     // Max 1 perte sur 5 
+int PE=0; 
+int PA=0;   
+unsigned long timeout=50; //en ms   
+
+
+int t[TAILLE_Fen]={1,1,1,1,1};   //fenêtre de taille 5 
+
+
 
 mic_tcp_sock socketClient;
 
+
+/*
+ * Permet de calculer le taux des pertes
+ */
+float tauxp(int *t) {   
+    int s=0;
+    for (int i=0; i<5; i++) {  
+        s+=t[i];
+    } 
+    return (float)(5-s)/5;
+}
+/*
+ * Permet de remplir de tab des pertes
+ */
+int updateTabp(int *t, int ack) {   
+
+    for (int i=0; i<TAILLE_Fen-1; i++) {  
+        t[i]=t[i+1];
+    } 
+    t[4] = ack; 
+}
 
 /*
  * Permet de créer un socket entre l’application et MIC-TCP
@@ -16,14 +43,14 @@ mic_tcp_sock socketClient;
  */
 int mic_tcp_socket(start_mode sm)
 {
-   int result = -1;
-   printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
-   result = initialize_components(sm); /* Appel obligatoire */
-   if (result==-1) {  return -1 ;}
-   set_loss_rate(0);
+    int result = -1;
+    printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
+    result = initialize_components(sm); /* Appel obligatoire */
+    if (result==-1) {  return -1 ;}
+    set_loss_rate(5);
     socketClient.state= ESTABLISHED; //PROVISOIRE
-   socketClient.fd =0 ;
-   return socketClient.fd;
+    socketClient.fd =0 ;
+    return socketClient.fd;
 }
 
 /*
@@ -53,6 +80,7 @@ int mic_tcp_accept(int socket, mic_tcp_sock_addr* addr)
 int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
 {
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
+
     return 1;
 }
 
@@ -61,13 +89,14 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
  * Retourne la taille des données envoyées, et -1 en cas d'erreur
  */
 int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
-{   
+{ 
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n"); 
     struct mic_tcp_sock_addr addr;  
     addr.ip_addr="127.0.0.1";  
     addr.ip_addr_size = sizeof(addr.ip_addr);
     addr.port = mic_sock; 
-    struct mic_tcp_header header;
+    struct mic_tcp_header header; 
+    struct mic_tcp_payload payload;  
     header.source_port = 1234;
     header.dest_port = mic_sock ; 
     header.seq_num = PE; //PE
@@ -76,72 +105,91 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
     header.ack = '0';
     header.fin = '0';    
     int reussi=0;
-
-
-    struct mic_tcp_payload payload; 
-
-    payload.size = mesg_size;
     payload.data = mesg;
-     
+    payload.size = mesg_size; 
     struct mic_tcp_pdu pdu ;
     pdu.header= header;
-    pdu.payload = payload;  
-
-    
+    pdu.payload = payload; 
     int taille = -1;
     int attempt = 0; 
     PE=(PE+1)%2;
-    struct mic_tcp_pdu Recep ;
+    struct mic_tcp_pdu Recep = {0};
+    int tailleRecue; 
    
     if (socketClient.state == ESTABLISHED) { 
-        taille=IP_send(pdu, addr);
+        taille=IP_send(pdu, addr); 
+
+
         if (taille==-1) { 
             printf("Erreur dans le IP_SEND \n"); 
             exit(-1);
-        }   
+        }    
+        if (taille>=0){ printf("Message envoyé \n "); }
 
         
 
-        while ( (attempt<=MAX_TRANS) && (reussi==0)) { 
-
-            if (taille>=0){ printf("Message envoyé\n "); reussi=1;} 
-            printf("SALUUUT");
+        while ((attempt<MAX_TRANS)&&(reussi==0)) {  
+            tailleRecue = IP_recv(&Recep, &addr,50);
+            printf ("tailleReçue = %d \n", tailleRecue); 
             
-            int tailleRecue = IP_recv(&Recep, &addr,100);
             if ( tailleRecue == -1) {
                 printf("Timeout : no ack \n ");
-                continue; 
-
-               
-            } 
-            printf(" PA = %d Pe= %d \n ",PA,PE);
-            if ((Recep.header.ack == 1) && (Recep.header.ack_num == PE)) {
-                //PE=(PE+1)%2;
-                printf(" apres recv PA = %d Pe= %d \n ",Recep.header.ack_num,PE);
-                break; 
-            } else {
+                printf("Taux pertes : ----%f \n ", tauxp(t));
+                if (tauxp(t)>TAUX){
+                            attempt ++; 
+                            taille=IP_send(pdu, addr);  
+                            //updateTabp(t,0);
+                            
+                } else { //perte admise
+                    printf("perte admise \n"); 
+                    reussi = 1;
+                    updateTabp(t,0);
+                }
                 
-                attempt ++;    
-
-            } 
+               
+            } else {
+                    
+                    if ((Recep.header.ack == '1') && (Recep.header.ack_num == PE)) {
+                        reussi=1;  
+                        /*if (attempt ==0) { 
+                          updateTabp(&t,1);
+                        }
+                        else {
+                            for(int i=0 ; i<TAILLE_Fen;i++) t[i]=1;
+                        } */
+                        updateTabp(t,1);
+                        printf(" apres recv PA = %d Pe= %d \n ",Recep.header.ack_num, PE);
+                        break; 
+                    } /*else {
+                        
+                        if (tauxp(t)>TAUX){ 
+                            updateTabp(t,0); 
+                            attempt ++; 
+                            taille=IP_send(pdu, addr); 
+                            if (taille==-1) { 
+                                printf("Erreur dans le IP_SEND \n"); 
+                                exit(-1);
+                            }   
+                        } else { updateTabp(t,1); reussi=1; } */
+                     
+            }
+            if (attempt == MAX_TRANS) {
+                updateTabp(t,0);
+            }
             printf("Attempt send  n°= %d \n", attempt); 
-            if (reussi==0){ 
-                 taille=IP_send(pdu, addr);
-            } 
-           
-                if (taille==-1) { 
-                    printf("Erreur dans le IP_SEND \n"); 
-                    exit(-1);
-                }  
-
+            
             
         } 
         if (attempt>MAX_TRANS) { 
-        taille=-1; 
-    }
+            taille=-1; 
+        }
 
+        for(int i=0; i<5;i++) printf("          t %d = %d \n",i,t[i]);
+
+    }
     return taille ;
-    }}
+    
+}
 
 
     
@@ -160,8 +208,9 @@ int mic_tcp_recv (int socket, char* mesg, int max_mesg_size)
     mic_tcp_payload payload;
     payload.size =  max_mesg_size;
     payload.data = mesg;
+    int taille = app_buffer_get(payload);
     
-    return app_buffer_get(payload);
+    return taille;
 }
 
 /*
@@ -172,7 +221,7 @@ int mic_tcp_recv (int socket, char* mesg, int max_mesg_size)
 int mic_tcp_close (int socket)
 {
     printf("[MIC-TCP] Appel de la fonction :  "); printf(__FUNCTION__); printf("\n");
-    return 1;
+    return -1;
 }
 
 /*
@@ -195,6 +244,8 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
     header.fin = '0';    
     struct mic_tcp_pdu pdu1;
     pdu1.header= header; 
+    pdu1.payload.data = NULL; 
+    pdu1.payload.size = 0; 
         
     if(pdu.header.seq_num==PA) {  
         printf("Message envoyé \n"); 
@@ -207,7 +258,10 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
            
     } 
     printf("Recepteur : ack_num %d, \n", pdu1.header.ack_num); 
+    
+    
     int taille=IP_send(pdu1, addr);
+    printf("TAILLE %d\n", taille);
     if (taille==-1) { 
         printf("Erreur dans le IP_SEND \n"); 
         exit(1);
