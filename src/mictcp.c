@@ -77,7 +77,7 @@ int mic_tcp_accept(int socket, mic_tcp_sock_addr* addr)
     header.seq_num = PE; //PE
     header.ack_num = 0;
     header.syn = '1';
-    header.ack = '0';
+    header.ack = '1';
     header.fin = '0';   
     payload.data = NULL;
     payload.size = 0;  
