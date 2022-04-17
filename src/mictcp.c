@@ -29,7 +29,7 @@ float tauxp(int *t) {
 /*
  * Permet de remplir de tab des pertes
  */
-int updateTabp(int *t, int ack) {   
+void updateTabp(int *t, int ack) {   
 
     for (int i=0; i<TAILLE_Fen-1; i++) {  
         t[i]=t[i+1];
@@ -69,7 +69,27 @@ int mic_tcp_bind(int socket, mic_tcp_sock_addr addr)
  */
 int mic_tcp_accept(int socket, mic_tcp_sock_addr* addr)
 {
-    printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
+    printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");  
+    struct mic_tcp_header header; 
+    struct mic_tcp_payload payload;  
+    header.source_port = 1234;
+    header.dest_port = socket ; 
+    header.seq_num = PE; //PE
+    header.ack_num = 0;
+    header.syn = '1';
+    header.ack = '0';
+    header.fin = '0';   
+    payload.data = NULL;
+    payload.size = 0;  
+    int attempt=0; 
+    int reussi=0;
+    struct mic_tcp_pdu pdu ;
+    pdu.header= header;
+    pdu.payload = payload;  
+    int taille=IP_send(pdu, *addr);  
+    if (taille==-1){ 
+        printf("Erreur IP_SEND")  ;  } 
+    
     return 1;
 }
 
@@ -80,8 +100,62 @@ int mic_tcp_accept(int socket, mic_tcp_sock_addr* addr)
 int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
 {
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
+    if (socketClient.state == IDLE) { 
+        struct mic_tcp_header header; 
+        struct mic_tcp_payload payload;  
+        header.source_port = 1234;
+        header.dest_port = socket ; 
+        header.seq_num = PE; //PE
+        header.ack_num = 0;
+        header.syn = '1';
+        header.ack = '0';
+        header.fin = '0';   
+        payload.data = NULL;
+        payload.size = 0;  
+        int attempt=0; 
+        int reussi=0;
+        struct mic_tcp_pdu pdu ;
+        pdu.header= header;
+        pdu.payload = payload;  
+        int taille=IP_send(pdu, addr); 
+        if (taille==-1) { 
+            printf("Erreur dans le IP_SEND \n"); 
+            exit(-1);
+        }    
+         while ((attempt<MAX_TRANS)&&(reussi==0)) {  
+            
+            struct mic_tcp_pdu Recep = {0};
+            int tailleRecue = IP_recv(&Recep, &addr,50);   
+            printf ("tailleReçue = %d \n", tailleRecue);   
+            if ( tailleRecue == -1) {
+                printf("Timeout : no ack \n ");   
+                attempt ++; 
+                taille=IP_send(pdu, addr);
+                } 
+            else{
+                    if ((Recep.header.ack == '1') && (Recep.header.syn=='1')) { 
+                        reussi=1; 
 
-    return 1;
+                    } 
+                    header.syn = '1';
+                    header.ack = '1';  
+                    pdu.header= header;
+                    pdu.payload = payload;   
+                    taille=IP_send(pdu, addr); 
+                    if (taille==-1) { 
+                    printf("Erreur dans le IP_SEND \n"); 
+                    exit(-1);
+                    }  
+                    socketClient.state =ESTABLISHED;    
+                    return 0;
+
+        
+            }
+        } 
+      
+    } 
+    return -1;
+    
 }
 
 /*
