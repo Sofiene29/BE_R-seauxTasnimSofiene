@@ -1,12 +1,16 @@
 #include <mictcp.h>
-#include <api/mictcp_core.h>  
-
+#include <api/mictcp_core.h>   
+#include<pthread.h> 
 #define MAX_TRANS 20 
 #define TAILLE_Fen 5 
 #define TAUX 0.2     // Max 1 perte sur 5 
 int PE=0; 
 int PA=0;   
-unsigned long timeout=50; //en ms   
+unsigned long timeout=50; //en ms  
+pthread_mutex_t mutex= PTHREAD_MUTEX_INITIALIZER; 
+pthread_cond_t cond=PTHREAD_COND_INITIALIZER;
+
+
 
 
 int t[TAILLE_Fen]={1,1,1,1,1};   //fenêtre de taille 5 
@@ -48,7 +52,7 @@ int mic_tcp_socket(start_mode sm)
     result = initialize_components(sm); /* Appel obligatoire */
     if (result==-1) {  return -1 ;}
     set_loss_rate(5);
-    socketClient.state= ESTABLISHED; //PROVISOIRE
+    socketClient.state= IDLE; 
     socketClient.fd =0 ;
     return socketClient.fd;
 }
@@ -70,6 +74,14 @@ int mic_tcp_bind(int socket, mic_tcp_sock_addr addr)
 int mic_tcp_accept(int socket, mic_tcp_sock_addr* addr)
 {
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");  
+    if (pthread_mutex_lock(&mutex)!=0){printf("Erreur mutex lock \n ");}   
+    socketClient.state=WAIT_SYN; 
+    if (pthread_mutex_unlock(&mutex)!=0){printf("Erreur mutex lock \n ");}  
+    if (pthread_mutex_lock(&mutex)!=0){printf("Erreur mutex lock \n ");}  
+    while(socketClient.state==WAIT_SYN){ 
+        pthread_cond_wait(&cond,&mutex);
+    }  
+    if (pthread_mutex_unlock(&mutex)!=0){printf("Erreur mutex lock \n ");} 
     struct mic_tcp_header header; 
     struct mic_tcp_payload payload;  
     header.source_port = 1234;
@@ -81,14 +93,17 @@ int mic_tcp_accept(int socket, mic_tcp_sock_addr* addr)
     header.fin = '0';   
     payload.data = NULL;
     payload.size = 0;  
-    int attempt=0; 
-    int reussi=0;
     struct mic_tcp_pdu pdu ;
     pdu.header= header;
     pdu.payload = payload;  
     int taille=IP_send(pdu, *addr);  
     if (taille==-1){ 
-        printf("Erreur IP_SEND")  ;  } 
+        printf("Erreur IP_SEND")  ;  }  
+     if (pthread_mutex_lock(&mutex)!=0){printf("Erreur mutex lock \n ");}  
+    while(socketClient.state==WAIT_ACK){ 
+        pthread_cond_wait(&cond,&mutex);
+    }  
+    if (pthread_mutex_unlock(&mutex)!=0){printf("Erreur mutex lock \n ");}
     
     return 1;
 }
@@ -117,13 +132,16 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
         struct mic_tcp_pdu pdu ;
         pdu.header= header;
         pdu.payload = payload;  
-        int taille=IP_send(pdu, addr); 
-        if (taille==-1) { 
+          
+
+
+         while ((attempt<MAX_TRANS)&&(reussi==0)) {  
+            int taille=IP_send(pdu, addr); 
+            if (taille==-1) { 
             printf("Erreur dans le IP_SEND \n"); 
             exit(-1);
         }    
-         while ((attempt<MAX_TRANS)&&(reussi==0)) {  
-            
+            socketClient.state=WAIT_SYNACK;
             struct mic_tcp_pdu Recep = {0};
             int tailleRecue = IP_recv(&Recep, &addr,50);   
             printf ("tailleReçue = %d \n", tailleRecue);   
@@ -191,7 +209,8 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
     int tailleRecue; 
    
     if (socketClient.state == ESTABLISHED) { 
-        taille=IP_send(pdu, addr); 
+        taille=IP_send(pdu, addr);  
+        socketClient.state=WAIT_ACK;
 
 
         if (taille==-1) { 
@@ -260,7 +279,8 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
 
         for(int i=0; i<5;i++) printf("          t %d = %d \n",i,t[i]);
 
-    }
+    } 
+    socketClient.state=ESTABLISHED;
     return taille ;
     
 }
@@ -307,7 +327,27 @@ int mic_tcp_close (int socket)
 void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
 {   
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n"); 
-    
+    if (socketClient.state==WAIT_SYN) {  
+        if(pdu.header.syn=='1'){ 
+        if (pthread_cond_broadcast(&cond)!=0){ 
+            printf("Erreur pthread cond broadcast \n ");
+        } 
+    if (pthread_mutex_lock(&mutex)!=0){printf("Erreur mutex lock \n ");} 
+    socketClient.state=WAIT_ACK;  
+    if (pthread_mutex_unlock(&mutex)!=0){printf("Erreur mutex lock \n ");}
+     
+    } }
+    else if (socketClient.state==WAIT_ACK){   
+        if (pdu.header.ack=='1'){ 
+             if (pthread_cond_broadcast(&cond)!=0){ 
+            printf("Erreur pthread cond broadcast \n ");
+        }   if (pthread_mutex_lock(&mutex)!=0){printf("Erreur mutex lock \n ");}
+            socketClient.state=ESTABLISHED; 
+            if (pthread_mutex_unlock(&mutex)!=0){printf("Erreur mutex lock \n ");}
+        }  
+
+    } 
+    else{ 
     struct mic_tcp_header header;
     header.source_port = 1234;
     header.dest_port = pdu.header.source_port; 
@@ -342,7 +382,7 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
     } 
         
     
-    
+    }   
 
 
 }
